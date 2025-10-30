@@ -3,6 +3,7 @@ import pickle
 import struct
 import numpy as np
 import random
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -12,6 +13,8 @@ import argparse
 import sys
 import copy
 import time
+from ultralytics import YOLO
+from pathlib import Path
 from prunning import restore_to_original_size, prune_and_restructure
 from ALA import ALA
 # Simple CNN model for MNIST or other datasets
@@ -86,6 +89,8 @@ def map_sequential_to_simplemodel(state_dict):
     
     return mapped_dict
 # Update local training to use data loaded via read_client_data
+
+
 def local_training(model, state_dict, train_loader, learning_rate=0.01, round=2, alaarg=1, ala=None):
     #model.load_state_dict(state_dict)
     if round==2:
@@ -155,7 +160,7 @@ def parse_args():
     parser.add_argument('--rounds', type=int, default=10, 
                        help='Number of training rounds (default: 4)')
     parser.add_argument('--dataset', type=str, default='Cifar100', 
-                       choices=['Cifar10', 'MNIST', 'FashionMNIST', 'Cifar100'], 
+                       choices=['Cifar10', 'MNIST', 'FashionMNIST', 'Cifar100', 'COCO128'], 
                        help='Dataset name (default: Cifar10)')
     parser.add_argument('--client-idx', type=int, default=0, 
                        help='Client index (default: 0)')
@@ -179,15 +184,55 @@ def parse_args():
                        help='Use random client index instead of fixed')
     parser.add_argument("--device", type=str, default="cpu",
                         choices=["cpu", "cuda"])
-    parser.add_argument("--ala", type=int, default=0)
+    parser.add_argument("--ala", type=int, default=1)
+    parser.add_argument('-did', "--device_id", type=str, default="0")
     
     return parser.parse_args()
 def local_initialization(ala, received_global_model, model, mask = None):
         ala.adaptive_local_aggregation(received_global_model, model, mask = mask)
+def load_test_data_yolo_ultralytics(dataset_path, client_id):
+        """
+        Para modelos Ultralytics, retorna o caminho do YAML do cliente.
+        """
+        dataset_path = Path("../dataset/COCO128/")
+        client_yaml_path = dataset_path / f'{client_id}.yaml'
+        
+        if not client_yaml_path.exists():
+            raise FileNotFoundError(f"YAML file for client {client_id} not found: {client_yaml_path}")
+        
+        return str(client_yaml_path)
 
+def evaluate_model_yolo_ultralytics(model, yaml_path, device):
+    """
+    Avalia o modelo YOLO Ultralytics (YOLOv5, YOLOv8, YOLO11) usando o método `val`.
+    """
+    # O modelo deve ser um modelo Ultralytics
+    # O device já deve estar setado no modelo, mas podemos garantir
+    #model.to(device)
+    
+    # Realiza a avaliação
+    results = model.val(data=yaml_path, imgsz=640, batch=16)#, device=device)
+    
+    # Extrai as métricas
+    map50 = results.box.map50  # mAP@0.5
+    map = results.box.map      # mAP@0.5:0.95
+    loss = results.stats['conf']     # perda média (se disponível)
+    
+    # Note: a loss pode não estar disponível no results, dependendo da versão
+    # Se não estiver, podemos retornar None para loss
+    if hasattr(results, 'loss'):
+        avg_loss = results.loss
+    else:
+        avg_loss = None
+    
+    return map50, avg_loss
 def main():
     args = parse_args()
-    
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.device_id
+    if args.device == "cuda" and not torch.cuda.is_available():
+        print("\ncuda is not avaiable.\n")
+        args.device = "cpu"
+    device = torch.device(args.device)
     # Set random client if requested
     if args.random_client:
         args.client_idx = random.randint(0, 5)
@@ -220,19 +265,22 @@ def main():
             num_classes=args.num_classes,
             dim=args.dim
         )
+    if args.dataset  =='COCO128':
+        model = YOLO("yolo11n.pt")
     loss = nn.CrossEntropyLoss()
     eta = 1
     rand_percent = 80
     layer_idx = 2
     # Load the dataset using the custom data loader
-    try:
-        train_loader = load_data(args.dataset, args.client_idx, is_train=True, batch_size=args.batch_size)
-        test_loader = load_data(args.dataset, args.client_idx, is_train=False, batch_size=args.batch_size)
-        print(f"Data loaded successfully - Train batches: {len(train_loader)}, Test batches: {len(test_loader)}")
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        sys.exit(1)
-    ala = ALA(args.client_idx, loss, train_loader, 32, 
+    if args.dataset  in ['MNIST', 'Cifar10', 'Cifar100']:
+        try:
+            train_loader = load_data(args.dataset, args.client_idx, is_train=True, batch_size=args.batch_size)
+            test_loader = load_data(args.dataset, args.client_idx, is_train=False, batch_size=args.batch_size)
+            print(f"Data loaded successfully - Train batches: {len(train_loader)}, Test batches: {len(test_loader)}")
+        except Exception as e:
+            print(f"Error loading data: {e}")
+            sys.exit(1)
+        ala = ALA(args.client_idx, loss, train_loader, 32, 
                     80, 2, 1.0, args.device)
     time.sleep(15)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -260,11 +308,14 @@ def main():
                 break
             print("Received global model.")
             # Evaluate test performance
-            test_accuracy, test_loss = evaluate_model(model, test_loader)
+            yaml_path = load_test_data_yolo_ultralytics(args.dataset, args.client_idx)
+                                
+            test_accuracy, test_loss = evaluate_model_yolo_ultralytics(model, yaml_path,device)
             print(f"Client {args.client_idx}: Test Accuracy: {test_accuracy:.2f}% | Test Loss: {test_loss:.4f}")
             #set_parameters(local_model)
-            # Perform local training using the received global model
-            updated_state = local_training(model, global_state, train_loader, args.learning_rate, round_num+1, args.ala, ala)
+            # Perform local training using the received global mode
+            model.train(data=yaml_path, epochs=1)
+            updated_state = model.state_dict()
             print("Local training completed.")
 
             # Evaluate training performance

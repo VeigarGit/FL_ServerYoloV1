@@ -13,10 +13,14 @@ import traceback
 import os
 import h5py
 import time
+from ultralytics import YOLO
+from pathlib import Path
 # Assuming you already have a test dataset available on the server side
 from data_utils import read_client_data  # Utility to read the server's dataset
 from prunning import restore_to_original_size, prune_and_restructure
 from size_mode import get_model_size
+
+
 # A simple model for demonstration; replace with your actual model (e.g., from your FedAvg code)
 class SimpleModel(nn.Module):
     def __init__(self, in_features=3, num_classes=10, dim=1600):
@@ -76,6 +80,8 @@ class FederatedLearningServer:
                 num_classes=args.num_classes,
                 dim=args.dim
             )
+        if args.dataset  =='COCO128':
+            self.global_model = YOLO("yolo11n.pt")
         self.rs_test_acc=[]
         self.rs_test_loss=[]
         self.global_state = self.global_model.state_dict()
@@ -87,6 +93,7 @@ class FederatedLearningServer:
         self.client_idx =[]
         self.clients_info = {}
         self.prune = args.prune
+        self.device = torch.device(args.device)
         # Load test data
         self.test_loader = self.load_test_data(args.dataset, args.test_client_idx, args.batch_size)
         if self.test_loader is None:
@@ -277,6 +284,42 @@ class FederatedLearningServer:
                 hf.create_dataset('rs_test_acc', data=self.rs_test_acc)
                 hf.create_dataset('rs_train_loss', data=self.rs_test_loss)
 
+    def load_test_data_yolo_ultralytics(dataset_path, client_id):
+        """
+        Para modelos Ultralytics, retorna o caminho do YAML do cliente.
+        """
+        dataset_path = Path("../dataset/COCO128/")
+        client_yaml_path = dataset_path / f'{client_id}.yaml'
+        
+        if not client_yaml_path.exists():
+            raise FileNotFoundError(f"YAML file for client {client_id} not found: {client_yaml_path}")
+        
+        return str(client_yaml_path)
+
+    def evaluate_model_yolo_ultralytics(self, yaml_path, device):
+        """
+        Avalia o modelo YOLO Ultralytics (YOLOv5, YOLOv8, YOLO11) usando o método `val`.
+        """
+        # O modelo deve ser um modelo Ultralytics
+        # O device já deve estar setado no modelo, mas podemos garantir
+        #model.to(device)
+        
+        # Realiza a avaliação
+        results = self.global_model.val(data=yaml_path, imgsz=640, batch=16)#, device=device)
+        
+        # Extrai as métricas
+        map50 = results.box.map50  # mAP@0.5
+        map = results.box.map      # mAP@0.5:0.95
+        loss = results.stats['conf']     # perda média (se disponível)
+        
+        # Note: a loss pode não estar disponível no results, dependendo da versão
+        # Se não estiver, podemos retornar None para loss
+        if hasattr(results, 'loss'):
+            avg_loss = results.loss
+        else:
+            avg_loss = None
+        
+        return map50, avg_loss
     def run_server(self):
         print("=== Federated Learning Server ===")
         print(f"Host: {self.args.host}:{self.args.port}")
@@ -292,7 +335,6 @@ class FederatedLearningServer:
             s.listen(self.args.max_clients)
             print(f"Server listening on {self.args.host}:{self.args.port}")
             print(f"Waiting for {self.args.clients_per_round} clients to connect...")
-            
             # Wait for initial client connections
             self.client_data = {index: None for index in range(1, self.args.clients_per_round+1)}
             while len(self.client_connections) < self.args.clients_per_round:
@@ -344,10 +386,14 @@ class FederatedLearningServer:
                         acc=[]
                         loss =[]
                         for i in self.client_idx:
-                            self.test_loader = self.load_test_data(self.args.dataset, i, self.args.batch_size)
-                            accuracy, avg_loss = self.evaluate_model(self.global_model, self.test_loader)
-                            acc.append(accuracy)
-                            loss.append(avg_loss)
+                            if self.args.dataset  =='COCO128':
+                                yaml_path = self.load_test_data_yolo_ultralytics(i)
+                                accuracy, avg_loss = self.evaluate_model_yolo_ultralytics(yaml_path, self.device)
+                            else:
+                                self.test_loader = self.load_test_data(self.args.dataset, i, self.args.batch_size)
+                                accuracy, avg_loss = self.evaluate_model(self.global_model, self.test_loader)
+                                acc.append(accuracy)
+                                loss.append(avg_loss)
                         print('acc: ',acc)
                         print('len acc', len(acc))
                         accuracy = sum(acc)/len(acc)
@@ -402,7 +448,7 @@ def parse_args():
     
     # Dataset and model parameters
     parser.add_argument('--dataset', type=str, default='Cifar10', 
-                       choices=['Cifar10', 'MNIST', 'FashionMNIST', 'Cifar100'],
+                       choices=['Cifar10', 'MNIST', 'FashionMNIST', 'Cifar100', 'COCO128'],
                        help='Dataset name (default: Cifar10)')
     parser.add_argument('--test-client-idx', type=int, default=0, 
                        help='Client index for test data (default: 100)')
@@ -426,11 +472,17 @@ def parse_args():
                        help='Maximum number of client connections (default: 10)')
     parser.add_argument("--device", type=str, default="cuda",
                         choices=["cpu", "cuda"])
+    parser.add_argument('-did', "--device_id", type=str, default="0")
     
     return parser.parse_args()
 
 def main():
     args = parse_args()
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.device_id
+
+    if args.device == "cuda" and not torch.cuda.is_available():
+        print("\ncuda is not avaiable.\n")
+        args.device = "cpu"
     server = FederatedLearningServer(args)
     server.run_server()
 

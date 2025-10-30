@@ -2,8 +2,11 @@ src/dataset/Cifar10
 src/dataset/MNIST
 src/dataset/Cifar100
 src/dataset/COCO128
+src/dataset/coco128
+src/system/runs/
 src/dataset/__pycache__
 src/results
 src/dataset/utils/__pycache__
 src/dataset/utils/LEAF/
 src/system/__pycache__
+yolo*

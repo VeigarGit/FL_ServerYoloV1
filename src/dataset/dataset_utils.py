@@ -270,3 +270,50 @@ def save_file(config_path, train_path, test_path, train_data, test_data, num_cli
         ujson.dump(config, f)
 
     print("Finish generating dataset.\n")
+def separate_data_detection(dataset, num_clients, num_classes, niid, balance, partition, class_per_client):
+    """
+    Separate object detection data for federated learning
+    """
+    X, y = dataset
+    X = np.array(X)
+    y = np.array(y)
+    
+    if not niid:
+        # IID case - simple random split
+        idxs = np.random.permutation(len(X))
+        batch_idxs = np.array_split(idxs, num_clients)
+        client_data = [X[idx] for idx in batch_idxs]
+        client_labels = [y[idx] for idx in batch_idxs]
+        
+        return client_data, client_labels, None
+    
+    else:
+        # Non-IID case - separate by dominant class
+        from collections import defaultdict
+        class_indices = defaultdict(list)
+        
+        for idx, dominant_class in enumerate(y):
+            class_indices[dominant_class].append(idx)
+        
+        client_data = [[] for _ in range(num_clients)]
+        client_labels = [[] for _ in range(num_clients)]
+        
+        # Distribute data based on partition strategy
+        if partition == "dirichlet":
+            # Dirichlet distribution for non-IID
+            pass
+        else:
+            # Default: assign specific classes to each client
+            classes_per_client = max(1, num_classes // num_clients)
+            
+            for client_id in range(num_clients):
+                start_class = (client_id * classes_per_client) % num_classes
+                end_class = start_class + classes_per_client
+                
+                for class_id in range(start_class, end_class):
+                    indices = class_indices.get(class_id, [])
+                    if indices:
+                        client_data[client_id].extend(X[indices])
+                        client_labels[client_id].extend(y[indices])
+        
+        return client_data, client_labels, None
