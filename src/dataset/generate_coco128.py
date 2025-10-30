@@ -580,4 +580,4 @@ if __name__ == "__main__":
         create_mini_coco128_dataset(coco128_path)
     
     generate_coco128_federated(dir_path, num_clients, niid, balance, partition, coco128_path)
-    generate_client_yamls_after_creation(dir_path, num_clients, 71)
+    generate_client_yamls_after_creation(dir_path, num_clients, 80)

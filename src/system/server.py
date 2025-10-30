@@ -370,15 +370,20 @@ class FederatedLearningServer:
                         t.join()
                 else:
                     for t in threads:
-                        t.join(self.time_threthold)
-                self.set_threthold()
+                        t.join()
+                #self.set_threthold()
                 # Aggregate the client updates
                 if client_updates:
                     print(f"Round {round_num + 1}: Aggregating {len(client_updates)} client updates")
                     aggregated_state = self.aggregate_models(client_updates)
+                    #for name, param in self.global_state.items():
+                        #print(f"{name:60} | {param.shape}")
                     
                     with self.lock:
+                        
                         self.global_state = aggregated_state
+                        #for name, param in self.global_state.items():
+                            #print(f"{name:60} | {param.shape}")
                         self.global_model.load_state_dict(self.global_state)
                     
                     # Evaluate model on the test dataset after aggregation
@@ -468,7 +473,7 @@ def parse_args():
     # Server options
     parser.add_argument('--max-clients', type=int, default=10, 
                        help='Maximum number of client connections (default: 10)')
-    parser.add_argument('--prune', type=int, default=0, 
+    parser.add_argument('--prune', type=int, default=1, 
                        help='Maximum number of client connections (default: 10)')
     parser.add_argument("--device", type=str, default="cuda",
                         choices=["cpu", "cuda"])

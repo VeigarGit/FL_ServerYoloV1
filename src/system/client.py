@@ -216,7 +216,7 @@ def evaluate_model_yolo_ultralytics(model, yaml_path, device):
     # Extrai as métricas
     map50 = results.box.map50  # mAP@0.5
     map = results.box.map      # mAP@0.5:0.95
-    loss = results.stats['conf']     # perda média (se disponível)
+    loss = results.results_dict.get('metrics/precision(B)', 0.0)     # perda média (se disponível)
     
     # Note: a loss pode não estar disponível no results, dependendo da versão
     # Se não estiver, podemos retornar None para loss
@@ -298,11 +298,12 @@ def main():
             # Receive the global model from the server
             global_state = recv_data(s)
             if round_num+1 ==2:
-                ammount = recv_data(s)
-                local_model, _ = prune_and_restructure(model=model, 
-                                                           pruning_rate=ammount, 
-                                                           size_fc=25, data=args.dataset)
-                set_parameters(model, local_model)
+                print("oi")
+                #ammount = recv_data(s)
+                #local_model, _ = prune_and_restructure(model=model, 
+                                                           #pruning_rate=ammount, 
+                                                           #size_fc=25, data=args.dataset)
+                #set_parameters(model, local_model)
             if global_state is None:
                 print("Failed to receive global model. Connection may be closed.")
                 break
@@ -310,23 +311,22 @@ def main():
             # Evaluate test performance
             yaml_path = load_test_data_yolo_ultralytics(args.dataset, args.client_idx)
                                 
-            test_accuracy, test_loss = evaluate_model_yolo_ultralytics(model, yaml_path,device)
-            print(f"Client {args.client_idx}: Test Accuracy: {test_accuracy:.2f}% | Test Loss: {test_loss:.4f}")
-            #set_parameters(local_model)
-            # Perform local training using the received global mode
+            #test_accuracy, test_loss = evaluate_model_yolo_ultralytics(model, yaml_path,device)
+           
             model.train(data=yaml_path, epochs=1)
             updated_state = model.state_dict()
             print("Local training completed.")
-
+            #for name, param in updated_state.items():
+                #print(f"{name:60} | {param.shape}")
             # Evaluate training performance
-            train_accuracy, train_loss = evaluate_model(model, train_loader)
-            print(f"Client {args.client_idx}: Training Accuracy: {train_accuracy:.2f}% | Training Loss: {train_loss:.4f}")
+            #train_accuracy, train_loss = evaluate_model(model, train_loader)
+            #print(f"Client {args.client_idx}: Training Accuracy: {train_accuracy:.2f}% | Training Loss: {train_loss:.4f}")
             
             
             
             # Send the updated model state back to the server
             send_data(s, updated_state)
-            
+            train_loader = [0,1,2,3,4,5] 
             send_data(s, len(train_loader))
             send_data(s, args.ala)
             print("Client update sent.")
