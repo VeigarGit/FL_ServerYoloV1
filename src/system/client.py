@@ -313,7 +313,7 @@ def main():
                                 
             #test_accuracy, test_loss = evaluate_model_yolo_ultralytics(model, yaml_path,device)
            
-            model.train(data=yaml_path, epochs=1)
+            model.train(data=yaml_path, epochs=1, batch=8, imgsz=640, device=device)
             updated_state = model.state_dict()
             print("Local training completed.")
             #for name, param in updated_state.items():

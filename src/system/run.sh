@@ -52,6 +52,8 @@ elif [ "$DATASET" = "Cifar10" ]; then
     python generate_Cifar10.py noniid - dir
 elif [ "$DATASET" = "MNIST" ]; then
     python generate_MNIST.py noniid - dir
+elif [ "$DATASET" = "COCO128" ]; then
+    python generate_coco128.py noniid - dir
 else
     echo "Dataset não reconhecido: $DATASET"
     exit 1
