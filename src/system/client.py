@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument('--rounds', type=int, default=10)
     parser.add_argument('--dataset', type=str, default='COCO128', choices=['COCO128'])
     parser.add_argument('--client-idx', type=int, default=0)
-    parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--batch-size', type=int, default=2)
     parser.add_argument('--device', type=str, default="cuda", choices=["cpu", "cuda"])
     parser.add_argument('-did', '--device_id', type=str, default="0")
     
@@ -92,12 +92,27 @@ def main():
             if global_state is None:
                 print("Failed to receive global model. Connection may be closed.")
                 break
-            
+
             print("Received global model.")
-            
+            dequantized_state_dict = {}
+            for k, v in global_state.items():
+                if isinstance(v, dict) and v.get('dtype') == 'quantized_int8':
+                    # Recupera tensores quantizados
+                    scale = v['scale']
+                    dequantized_state_dict[k] = v['weights'].float() * scale
+                else:
+                    # Mantém tensores normais
+                    dequantized_state_dict[k] = v
             state = type(model)()
             state.load_state_dict(copy.deepcopy(model.state_dict()))
-            state.load_state_dict(global_state)
+            missing_keys, unexpected_keys = state.load_state_dict(dequantized_state_dict, strict=False)
+
+            # Opcional: imprimir as chaves que não foram atualizadas (faltantes) e as inesperadas
+            if missing_keys:
+                print(f"Missing keys (not updated): {missing_keys}")
+            if unexpected_keys:
+                print(f"Unexpected keys (ignored): {unexpected_keys}")
+
             set_parameters(model, state)
             
             try:

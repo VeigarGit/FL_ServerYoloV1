@@ -68,8 +68,46 @@ class FederatedLearningServer:
             
             with self.lock:
                 current_global_state = self.global_state.copy()
-            
-            self.send_data(conn, current_global_state)
+                size_before = sys.getsizeof(pickle.dumps(current_global_state)) / (1024 * 1024)  # MB
+                keys = list(current_global_state.keys())
+                #print("Keys before pruning:", keys)
+                
+                # Filtrar chaves que NÃO correspondem ao padrão model.model.23.*
+                filtered_global_state = {k: v for k, v in current_global_state.items() 
+                                    if not (k.startswith('model.model.23.') or k.startswith('model.model.10.'))}
+                quantized_state_dict = {}
+                for k, v in filtered_global_state.items():
+                    if v.dtype == torch.float32:
+                        # Quantização para int8 (preservando escala e zero_point)
+                        v_f32 = v.clone().float()
+                        scale = v_f32.abs().max() / 127.0
+                        quantized_tensor = torch.round(v_f32 / scale).clamp(-128, 127).to(torch.int8)
+                        
+                        # Armazena tensor + metadados de quantização
+                        quantized_state_dict[k] = {
+                            'weights': quantized_tensor,
+                            'scale': scale,
+                            'dtype': 'quantized_int8'
+                        }
+                    else:
+                        # Mantém tensores não-float32 originais
+                        quantized_state_dict[k] = v
+                # Opcional: verificar quais chaves foram removidas
+                removed_keys = [k for k in keys if k.startswith('model.model.23.') or k.startswith('model.model.10.')]
+                if removed_keys:
+                    #print(f"Removendo camadas: {removed_keys}")
+                    print(f"Total de camadas removidas: {len(removed_keys)}")
+                size_after = sys.getsizeof(pickle.dumps(quantized_state_dict)) / (1024 * 1024)  # MB
+    
+                # Calcular economia
+                size_saved = size_before - size_after
+                print(f"Tamanho antes: {size_before:.2f} MB")
+                print(f"Tamanho depois: {size_after:.2f} MB")
+                print(f"Economia: {size_saved:.2f} MB")
+                #print("Keys after pruning:", list(filtered_global_state.keys()))
+
+            self.send_data(conn, quantized_state_dict)  # Envia o estado filtrado
+            #self.send_data(conn, current_global_state)
             print(f"Round {round_num}: Sent global model to client {client_id}")
             
             updated_state = self.recv_data(conn)
