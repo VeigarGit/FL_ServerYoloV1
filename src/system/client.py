@@ -7,6 +7,15 @@ import os
 from ultralytics import YOLO
 from pathlib import Path
 import copy
+import random
+import numpy as np
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from typing import List, Tuple
+from torch.utils.data import Subset
+from PIL import Image
+from torchvision import transforms
+import sys
 def send_data(conn, data):
     data_bytes = pickle.dumps(data)
     conn.sendall(struct.pack('!I', len(data_bytes)))
@@ -55,7 +64,158 @@ def parse_args():
     parser.add_argument('-did', '--device_id', type=str, default="0")
     
     return parser.parse_args()
+class CustomImageDataset():
+    def __init__(self, img_dir, transform=None):
+        self.img_dir = img_dir
+        
+        # DEFINIR TRANSFORMAÇÃO OBRIGATÓRIA que inclui ToTensor()
+        if transform is None:
+            self.transform = transforms.Compose([
+                transforms.Resize((416, 416)),
+                transforms.ToTensor(),  # ESSENCIAL: converte PIL para Tensor
+            ])
+        else:
+            self.transform = transform
+            
+        # Listar apenas arquivos de imagem
+        self.images = [item for item in os.listdir(img_dir) 
+                      if os.path.isfile(os.path.join(img_dir, item)) and
+                      item.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
+        
+        print(f"Encontradas {len(self.images)} imagens em {img_dir}")
+    
+    def __len__(self):
+        return len(self.images)
+    
+    def __getitem__(self, idx):
+        img_path = os.path.join(self.img_dir, self.images[idx])
+        
+        try:
+            # Carregar imagem
+            image = Image.open(img_path).convert('RGB')
+            
+            # APLICAR A TRANSFORMAÇÃO (inclui ToTensor())
+            if self.transform:
+                image = self.transform(image)
+            else:
+                # Fallback: converter para tensor manualmente se não htransform
+                image = transforms.ToTensor()(image)
+            
+            # Verificar se a imagem é um tensor
+            if not isinstance(image, torch.Tensor):
+                raise TypeError(f"Imagem não é um tensor: {type(image)}")
+            
+            # Placeholder para targets (ajuste conforme seu dataset)
+            # Para COCO, você precisaria carregar os labels reais
+            target = torch.zeros(1, 5)  # [class_id, x_center, y_center, width, height]
+            
+            return image, target
+            
+        except Exception as e:
+            print(f"Erro ao carregar {img_path}: {e}")
+            # Retornar tensores dummy em caso de erro
+            dummy_image = torch.zeros(3, 416, 416)
+            dummy_target = torch.zeros(1, 5)
+            return dummy_image, dummy_target
 
+def adaptive_local_aggregation(client_id, device,
+                            global_model: nn.Module,
+                            local_model: nn.Module,
+                            mask=None) -> None:
+    """
+    Versão corrigida do ALA usando state_dict() em vez de deepcopy
+    """
+    
+    print(f"Iniciando ALA para cliente {client_id}")
+    
+    # Mover modelos para o device
+    global_model = global_model.to(device)
+    local_model = local_model.to(device)
+    
+    # Obter listas de parâmetros
+    params_g = list(global_model.parameters())
+    params = list(local_model.parameters())
+    
+    if len(params_g) == 0 or len(params) == 0:
+        print("Erro: Modelos não têm parâmetros")
+        return
+    
+    # Verificar se é primeira iteração
+    if torch.sum(params_g[0] - params[0]) == 0:
+        print("Primeira iteração - ALA desativado")
+        return
+    
+    # 1. Preservar updates nas camadas inferiores
+    print("Preservando camadas inferiores...")
+    for param, param_g in zip(params[:-2], params_g[:-2]):
+        param.data.copy_(param_g.data)
+    
+    # 2. Criar modelo temporário usando state_dict (evita deepcopy)
+    model_t = type(local_model)()  # Criar nova instância do mesmo tipo
+    model_t.load_state_dict(local_model.state_dict())
+    model_t = model_t.to(device)
+    params_t = list(model_t.parameters())
+    
+    # 3. Focar apenas nas camadas superiores
+    if len(params) < 2:
+        print("Modelo tem muito poucas camadas para ALA")
+        return
+        
+    params_p = params[-2:]  # Parâmetros locais (últimas 2 camadas)
+    params_gp = params_g[-2:]  # Parâmetros globais (últimas 2 camadas)  
+    params_tp = params_t[-2:]  # Parâmetros temporários (últimas 2 camadas)
+    
+    # 4. Congelar camadas inferiores no modelo temporário
+    for param in params_t[:-2]:
+        param.requires_grad = False
+    
+    # 5. Inicializar pesos
+    weights = [torch.ones_like(param.data).to(device) for param in params_p]
+    
+    # 6. Inicializar camadas superiores no modelo temporário
+    for param_t, param, param_g, weight in zip(params_tp, params_p, params_gp, weights):
+        param_t.data.copy_(param + (param_g - param) * weight)
+    
+    # 7. SIMULAÇÃO DE TREINO - Criar gradientes artificiais
+    print("Simulando treino para obter gradientes...")
+    
+    # Para cada parâmetro nas camadas superiores, criar gradientes simulados
+    for i, (param_t, param, param_g, weight) in enumerate(zip(params_tp, params_p, params_gp, weights)):
+        # Garantir que param_t requer gradientes
+        param_t.requires_grad = True
+        
+        # Simular forward pass
+        x = param_t.data.clone().requires_grad_(True)
+        target = torch.randn_like(x)
+        
+        # Calcular loss simulada
+        loss = torch.nn.functional.mse_loss(x, target)
+        
+        # Backward para gerar gradientes
+        loss.backward()
+        
+        # Usar o gradiente simulado para atualizar os pesos
+        if x.grad is not None:
+            with torch.no_grad():
+                # Atualizar peso
+                weight_update = x.grad * (param_g - param)
+                weight.data.copy_(torch.clamp(weight - 0.1 * weight_update, 0, 1))
+                
+                # Atualizar parâmetro temporário
+                param_t.data.copy_(param + (param_g - param) * weight)
+        
+        print(f"Camada {i}: peso médio = {weight.mean().item():.4f}")
+    
+    # 8. Aplicar mudanças ao modelo local
+    for param, param_t in zip(params_p, params_tp):
+        param.data.copy_(param_t.data)
+    
+    print(f"ALA concluído para cliente {client_id}")
+
+    # Limpar memória
+    del model_t, params_t
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 def main():
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device_id
@@ -108,12 +268,13 @@ def main():
             missing_keys, unexpected_keys = state.load_state_dict(dequantized_state_dict, strict=False)
 
             # Opcional: imprimir as chaves que não foram atualizadas (faltantes) e as inesperadas
-            if missing_keys:
-                print(f"Missing keys (not updated): {missing_keys}")
-            if unexpected_keys:
-                print(f"Unexpected keys (ignored): {unexpected_keys}")
-
-            set_parameters(model, state)
+            #if missing_keys:
+                #print(f"Missing keys (not updated): {missing_keys}")
+            #if unexpected_keys:
+                #print(f"Unexpected keys (ignored): {unexpected_keys}")
+            adaptive_local_aggregation(args.client_idx, device,state,
+                                      model)
+            #set_parameters(model, state)
             
             try:
                 yaml_path = load_train_data_yolo_ultralytics(args.client_idx)
@@ -124,7 +285,39 @@ def main():
                 break
             
             updated_state = model.state_dict()
-            
+            keys = list(updated_state.keys())
+            size_before = sys.getsizeof(pickle.dumps(updated_state)) / (1024 * 1024)  # MB
+            filtered_updated_state = {k: v for k, v in updated_state.items() 
+                                    if not (k.startswith('model.model.23.') or k.startswith('model.model.10.'))}
+            quantized_state_dict = {}
+            for k, v in filtered_updated_state.items():
+                if v.dtype == torch.float32:
+                    # Quantização para int8 (preservando escala e zero_point)
+                    v_f32 = v.clone().float()
+                    scale = v_f32.abs().max() / 127.0
+                    quantized_tensor = torch.round(v_f32 / scale).clamp(-128, 127).to(torch.int8)
+                    
+                    # Armazena tensor + metadados de quantização
+                    quantized_state_dict[k] = {
+                        'weights': quantized_tensor,
+                        'scale': scale,
+                        'dtype': 'quantized_int8'
+                    }
+                else:
+                    # Mantém tensores não-float32 originais
+                    quantized_state_dict[k] = v
+            # Opcional: verificar quais chaves foram removidas
+            removed_keys = [k for k in keys if k.startswith('model.model.23.') or k.startswith('model.model.10.')]
+            if removed_keys:
+                #print(f"Removendo camadas: {removed_keys}")
+                print(f"Total de camadas removidas: {len(removed_keys)}")
+            size_after = sys.getsizeof(pickle.dumps(quantized_state_dict)) / (1024 * 1024)  # MB
+
+            # Calcular economia
+            size_saved = size_before - size_after
+            print(f"Tamanho antes: {size_before:.2f} MB")
+            print(f"Tamanho depois: {size_after:.2f} MB")
+            print(f"Economia: {size_saved:.2f} MB")
             send_data(s, updated_state)
             send_data(s, 6)
             send_data(s, 1)

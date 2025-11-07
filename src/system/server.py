@@ -111,13 +111,22 @@ class FederatedLearningServer:
             print(f"Round {round_num}: Sent global model to client {client_id}")
             
             updated_state = self.recv_data(conn)
+            dequantized_state_dict = {}
+            for k, v in updated_state.items():
+                if isinstance(v, dict) and v.get('dtype') == 'quantized_int8':
+                    # Recupera tensores quantizados
+                    scale = v['scale']
+                    dequantized_state_dict[k] = v['weights'].float() * scale
+                else:
+                    # Mantém tensores normais
+                    dequantized_state_dict[k] = v
             self.client_data[client_id] = self.recv_data(conn)
             self.argalgo = self.recv_data(conn)
             end_time = time.time()
             
             if updated_state is not None:
                 with self.lock:
-                    client_updates.append(updated_state)
+                    client_updates.append(dequantized_state_dict)
                 training_time = end_time - start_time
                 self.clients_info[client_id]['training_time'] = training_time
                 print(f"Round {round_num}: Client {client_id} training completed in {training_time:.2f} seconds")
