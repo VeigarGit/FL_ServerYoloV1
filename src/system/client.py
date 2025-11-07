@@ -16,6 +16,8 @@ from torch.utils.data import Subset
 from PIL import Image
 from torchvision import transforms
 import sys
+import h5py
+import tempfile
 def send_data(conn, data):
     data_bytes = pickle.dumps(data)
     conn.sendall(struct.pack('!I', len(data_bytes)))
@@ -56,7 +58,7 @@ def parse_args():
     
     parser.add_argument('--host', type=str, default='localhost')
     parser.add_argument('--port', type=int, default=9090)
-    parser.add_argument('--rounds', type=int, default=10)
+    parser.add_argument('--rounds', type=int, default=3)
     parser.add_argument('--dataset', type=str, default='COCO128', choices=['COCO128'])
     parser.add_argument('--client-idx', type=int, default=0)
     parser.add_argument('--batch-size', type=int, default=2)
@@ -216,6 +218,17 @@ def adaptive_local_aggregation(client_id, device,
     del model_t, params_t
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+def evaluate_model_yolo_ultralytics(yaml_path, model_local):
+        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_file:
+            temp_path = tmp_file.name
+        # Salvar o modelo local no arquivo temporário
+        model_local.save(temp_path)
+        # Carregar o modelo a partir do arquivo temporário
+        model = YOLO(temp_path)
+        results = model.val(data=yaml_path, imgsz=640, batch=16)
+        map50 = results.box.map50
+        map = results.box.map
+        return map50, map
 def main():
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device_id
@@ -233,6 +246,8 @@ def main():
     print(f"Rounds: {args.rounds}")
     print(f"Device: {args.device}")
     print("=" * 40)
+    rs_test_acc=[]
+    rs_test_loss=[]
     
     model = YOLO("yolo11n.pt")
     
@@ -275,7 +290,27 @@ def main():
             adaptive_local_aggregation(args.client_idx, device,state,
                                       model)
             #set_parameters(model, state)
-            
+            acc=[]
+            loss=[]
+            try:
+                yaml_path = load_train_data_yolo_ultralytics(args.client_idx)
+                accuracy, avg_loss = evaluate_model_yolo_ultralytics(yaml_path, model)
+                acc.append(accuracy)
+                loss.append(avg_loss)
+            except Exception as e:
+                print(f"Error evaluating client {args.client_idx}: {e}")
+                acc.append(0)
+                loss.append(0)
+        
+            if acc:
+                accuracy = sum(acc) / len(acc)
+                rs_test_acc.append(accuracy)
+                print(f"Round {round_num + 1}: Test mAP@0.5: {accuracy:.4f}")
+            if loss:
+                losses = sum(loss) / len(loss)
+                rs_test_loss.append(losses)
+                print(f"Round {round_num + 1}: Test mAP@mAP50-95: {losses:.4f}")
+
             try:
                 yaml_path = load_train_data_yolo_ultralytics(args.client_idx)
                 model.train(data=yaml_path, epochs=1, batch=args.batch_size, imgsz=640, device=device)
@@ -288,7 +323,7 @@ def main():
             keys = list(updated_state.keys())
             size_before = sys.getsizeof(pickle.dumps(updated_state)) / (1024 * 1024)  # MB
             filtered_updated_state = {k: v for k, v in updated_state.items() 
-                                    if not (k.startswith('model.model.23.') or k.startswith('model.model.10.'))}
+                                    if not (k.startswith('model.model.23.'))}# or k.startswith('model.model.10.'))}
             quantized_state_dict = {}
             for k, v in filtered_updated_state.items():
                 if v.dtype == torch.float32:
@@ -307,7 +342,7 @@ def main():
                     # Mantém tensores não-float32 originais
                     quantized_state_dict[k] = v
             # Opcional: verificar quais chaves foram removidas
-            removed_keys = [k for k in keys if k.startswith('model.model.23.') or k.startswith('model.model.10.')]
+            removed_keys = [k for k in keys if k.startswith('model.model.23.') ]#or k.startswith('model.model.10.')]
             if removed_keys:
                 #print(f"Removendo camadas: {removed_keys}")
                 print(f"Total de camadas removidas: {len(removed_keys)}")
@@ -329,8 +364,18 @@ def main():
             except Exception as e:
                 print(f"Error waiting for server: {e}")
                 break
-
+    save_results(rs_test_acc,rs_test_loss, args.dataset, args.client_idx)           
     print("\nTraining completed!")
-
+def save_results(rs_test_acc,rs_test_loss, dataset, client_idx):
+        dataset = str(dataset)
+        a = str(client_idx)
+        algo = dataset + "_client_" + a
+        result_path = "../results/"
+        if not os.path.exists(result_path):
+            os.makedirs(result_path)
+        file_path = result_path + "{}.h5".format(algo)
+        with h5py.File(file_path, 'w') as hf:
+            hf.create_dataset('mAP50', data=rs_test_acc)
+            hf.create_dataset('mAP50-95', data=rs_test_loss)
 if __name__ == '__main__':
     main()

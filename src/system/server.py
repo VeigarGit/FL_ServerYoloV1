@@ -74,7 +74,7 @@ class FederatedLearningServer:
                 
                 # Filtrar chaves que NÃO correspondem ao padrão model.model.23.*
                 filtered_global_state = {k: v for k, v in current_global_state.items() 
-                                    if not (k.startswith('model.model.23.') or k.startswith('model.model.10.'))}
+                                    if not (k.startswith('model.model.23.'))} #or k.startswith('model.model.10.'))}
                 quantized_state_dict = {}
                 for k, v in filtered_global_state.items():
                     if v.dtype == torch.float32:
@@ -93,7 +93,7 @@ class FederatedLearningServer:
                         # Mantém tensores não-float32 originais
                         quantized_state_dict[k] = v
                 # Opcional: verificar quais chaves foram removidas
-                removed_keys = [k for k in keys if k.startswith('model.model.23.') or k.startswith('model.model.10.')]
+                removed_keys = [k for k in keys if k.startswith('model.model.23.') ]#or k.startswith('model.model.10.')]
                 if removed_keys:
                     #print(f"Removendo camadas: {removed_keys}")
                     print(f"Total de camadas removidas: {len(removed_keys)}")
@@ -226,19 +226,49 @@ class FederatedLearningServer:
                     
                     if self.args.dataset == 'COCO128':
                         acc = []
+                        loss = []
                         for i in self.client_idx:
                             try:
                                 yaml_path = self.load_test_data_yolo_ultralytics(i)
                                 accuracy, avg_loss = self.evaluate_model_yolo_ultralytics(yaml_path)
                                 acc.append(accuracy)
+                                loss.append(avg_loss)
                             except Exception as e:
                                 print(f"Error evaluating client {i}: {e}")
                                 acc.append(0)
+                                loss.append(0)
                         
                         if acc:
                             accuracy = sum(acc) / len(acc)
                             self.rs_test_acc.append(accuracy)
                             print(f"Round {round_num + 1}: Test mAP@0.5: {accuracy:.4f}")
+                        if acc:
+                            losses = sum(loss) / len(loss)
+                            self.rs_test_loss.append(losses)
+                            print(f"Round {round_num + 1}: Test mAP@0.5: {losses:.4f}")
+
+                    if self.args.dataset == 'tcl':
+                        acc = []
+                        loss = []
+                        for i in self.client_idx:
+                            try:
+                                yaml_path = self.load_test_data_yolo_ultralytics(i)
+                                accuracy, avg_loss = self.evaluate_model_yolo_ultralytics(yaml_path)
+                                acc.append(accuracy)
+                                loss.append(avg_loss)
+                            except Exception as e:
+                                print(f"Error evaluating client {i}: {e}")
+                                acc.append(0)
+                                loss.append(0)
+                        
+                        if acc:
+                            accuracy = sum(acc) / len(acc)
+                            self.rs_test_acc.append(accuracy)
+                            print(f"Round {round_num + 1}: Test mAP@0.5: {accuracy:.4f}")
+                        if loss:
+                            losses = sum(loss) / len(loss)
+                            self.rs_test_loss.append(losses)
+                            print(f"Round {round_num + 1}: Test mAP@mAP50-95: {losses:.4f}")
                     
                     successful_notifications = 0
                     for conn in self.client_connections:
@@ -268,7 +298,7 @@ def parse_args():
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--port', type=int, default=9090)
     parser.add_argument('--clients-per-round', type=int, default=2)
-    parser.add_argument('--rounds', type=int, default=10)
+    parser.add_argument('--rounds', type=int, default=3)
     parser.add_argument('--dataset', type=str, default='COCO128', choices=['COCO128'])
     parser.add_argument('--test-client-idx', type=int, default=0)
     parser.add_argument('--max-clients', type=int, default=10)
