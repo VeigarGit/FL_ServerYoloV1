@@ -3,7 +3,7 @@
 # Valores padrão
 CLIENT_COUNT=2
 HOST="localhost"
-DATASET="Cifar100"
+DATASET="COCO128"
 SESSION_NAME="myapp"
 
 # Processar argumentos

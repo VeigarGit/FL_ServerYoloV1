@@ -18,6 +18,7 @@ from torchvision import transforms
 import sys
 import h5py
 import tempfile
+from size_mode import get_model_size
 def send_data(conn, data):
     data_bytes = pickle.dumps(data)
     conn.sendall(struct.pack('!I', len(data_bytes)))
@@ -45,7 +46,7 @@ def set_parameters(model, state_new):
         old_param.data = new_param.data.clone()
 
 def load_train_data_yolo_ultralytics(client_id):
-    dataset_path = Path("../dataset/COCO128/")
+    dataset_path = Path("../dataset/tcl/")
     client_yaml_path = dataset_path / f'{client_id}.yaml'
     
     if not client_yaml_path.exists():
@@ -58,7 +59,7 @@ def parse_args():
     
     parser.add_argument('--host', type=str, default='localhost')
     parser.add_argument('--port', type=int, default=9090)
-    parser.add_argument('--rounds', type=int, default=3)
+    parser.add_argument('--rounds', type=int, default=100)
     parser.add_argument('--dataset', type=str, default='COCO128', choices=['COCO128'])
     parser.add_argument('--client-idx', type=int, default=0)
     parser.add_argument('--batch-size', type=int, default=2)
@@ -153,8 +154,14 @@ def adaptive_local_aggregation(client_id, device,
         param.data.copy_(param_g.data)
     
     # 2. Criar modelo temporário usando state_dict (evita deepcopy)
-    model_t = type(local_model)()  # Criar nova instância do mesmo tipo
-    model_t.load_state_dict(local_model.state_dict())
+    #model_t = type(local_model)()  # Criar nova instância do mesmo tipo
+    #model_t.load_state_dict(local_model.state_dict())
+    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_file:
+        temp_path = tmp_file.name
+    # Salvar o modelo local no arquivo temporário
+    local_model.save(temp_path)
+    # Carregar o modelo a partir do arquivo temporário
+    model_t = YOLO(temp_path)
     model_t = model_t.to(device)
     params_t = list(model_t.parameters())
     
@@ -218,17 +225,18 @@ def adaptive_local_aggregation(client_id, device,
     del model_t, params_t
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-def evaluate_model_yolo_ultralytics(yaml_path, model_local):
-        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_file:
-            temp_path = tmp_file.name
-        # Salvar o modelo local no arquivo temporário
-        model_local.save(temp_path)
-        # Carregar o modelo a partir do arquivo temporário
-        model = YOLO(temp_path)
-        results = model.val(data=yaml_path, imgsz=640, batch=16)
-        map50 = results.box.map50
-        map = results.box.map
-        return map50, map
+def evaluate_model_yolo_ultralytics(yaml_path, model_local, device):
+    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_file:
+        temp_path = tmp_file.name
+    # Salvar o modelo local no arquivo temporário
+    model_local.save(temp_path)
+    # Carregar o modelo a partir do arquivo temporário
+    mod = YOLO(temp_path)
+    selected_class_ids = [0, 1, 2, 3, 5, 7]
+    results = mod.val(data=yaml_path, imgsz=640, batch=2, device=device, classes=selected_class_ids, plots=True, save_json=True, verbose=False)
+    map50 = results.box.map50
+    map = results.box.map
+    return map50, map
 def main():
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device_id
@@ -246,10 +254,10 @@ def main():
     print(f"Rounds: {args.rounds}")
     print(f"Device: {args.device}")
     print("=" * 40)
-    rs_test_acc=[]
-    rs_test_loss=[]
+    rs_test_acc=[0]
+    rs_test_loss=[0]
     
-    model = YOLO("yolo11n.pt")
+    model = YOLO("yolo11n_atcll.pt")
     
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
@@ -259,7 +267,10 @@ def main():
         except Exception as e:
             print(f"Connection failed: {e}")
             return
-        
+        selected_class_ids = [0, 1, 2, 3, 5, 7]  # Exemplo de IDs de classes selecionadas
+        yaml_path = load_train_data_yolo_ultralytics(args.client_idx)
+        #model.train(data=yaml_path, epochs=1, batch=args.batch_size, imgsz=640, device=device, patience=100, save_period=5,classes=selected_class_ids,val=True,plots=True, verbose=False,save_json=True)
+        local_state = model.state_dict()
         for round_num in range(args.rounds):
             print(f"\n--- Round {round_num + 1}/{args.rounds} ---")
             
@@ -278,30 +289,38 @@ def main():
                 else:
                     # Mantém tensores normais
                     dequantized_state_dict[k] = v
-            state = type(model)()
-            state.load_state_dict(copy.deepcopy(model.state_dict()))
-            missing_keys, unexpected_keys = state.load_state_dict(dequantized_state_dict, strict=False)
 
-            # Opcional: imprimir as chaves que não foram atualizadas (faltantes) e as inesperadas
-            #if missing_keys:
-                #print(f"Missing keys (not updated): {missing_keys}")
-            #if unexpected_keys:
-                #print(f"Unexpected keys (ignored): {unexpected_keys}")
-            adaptive_local_aggregation(args.client_idx, device,state,
-                                      model)
+            #state = type(model)().to(device)
+            with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_file:
+                temp_path = tmp_file.name
+            # Salvar o modelo local no arquivo temporário
+            model.save(temp_path)
+            # Carregar o modelo a partir do arquivo temporário
+            state = YOLO(temp_path)
+            #state.load_state_dict(local_state)
+            missing_keys, unexpected_keys = state.load_state_dict(dequantized_state_dict, strict=False)
+            get = get_model_size(state)
+            with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_file:
+                temp_path = tmp_file.name
+            # Salvar o modelo local no arquivo temporário
+            model.save(temp_path)
+            # Carregar o modelo a partir do arquivo temporário
+            model = YOLO(temp_path)
+            
+            #adaptive_local_aggregation(args.client_idx, device,state,model)
             #set_parameters(model, state)
             acc=[]
             loss=[]
             try:
                 yaml_path = load_train_data_yolo_ultralytics(args.client_idx)
-                accuracy, avg_loss = evaluate_model_yolo_ultralytics(yaml_path, model)
+                accuracy, avg_loss = evaluate_model_yolo_ultralytics(yaml_path, model, device)
                 acc.append(accuracy)
                 loss.append(avg_loss)
             except Exception as e:
                 print(f"Error evaluating client {args.client_idx}: {e}")
                 acc.append(0)
                 loss.append(0)
-        
+
             if acc:
                 accuracy = sum(acc) / len(acc)
                 rs_test_acc.append(accuracy)
@@ -310,10 +329,12 @@ def main():
                 losses = sum(loss) / len(loss)
                 rs_test_loss.append(losses)
                 print(f"Round {round_num + 1}: Test mAP@mAP50-95: {losses:.4f}")
-
+            save_results(rs_test_acc,rs_test_loss, args.dataset, args.client_idx)      
             try:
+                selected_class_ids = [0, 1, 2, 3, 5, 7]  # Exemplo de IDs de classes selecionadas
                 yaml_path = load_train_data_yolo_ultralytics(args.client_idx)
-                model.train(data=yaml_path, epochs=1, batch=args.batch_size, imgsz=640, device=device)
+                #if round_num > 0:
+                model.train(data=yaml_path, epochs=1, batch=args.batch_size, imgsz=640, device=device, patience=100, save_period=5,classes=selected_class_ids,val=True,plots=True, verbose=False,save_json=True)
                 print("Local training completed.")
             except Exception as e:
                 print(f"Training failed: {e}")
@@ -325,7 +346,7 @@ def main():
             filtered_updated_state = {k: v for k, v in updated_state.items() 
                                     if not (k.startswith('model.model.23.'))}# or k.startswith('model.model.10.'))}
             quantized_state_dict = {}
-            for k, v in filtered_updated_state.items():
+            for k, v in updated_state.items():
                 if v.dtype == torch.float32:
                     # Quantização para int8 (preservando escala e zero_point)
                     v_f32 = v.clone().float()
@@ -353,7 +374,7 @@ def main():
             print(f"Tamanho antes: {size_before:.2f} MB")
             print(f"Tamanho depois: {size_after:.2f} MB")
             print(f"Economia: {size_saved:.2f} MB")
-            send_data(s, updated_state)
+            send_data(s, quantized_state_dict)
             send_data(s, 6)
             send_data(s, 1)
             print("Client update sent.")
@@ -364,7 +385,7 @@ def main():
             except Exception as e:
                 print(f"Error waiting for server: {e}")
                 break
-    save_results(rs_test_acc,rs_test_loss, args.dataset, args.client_idx)           
+         
     print("\nTraining completed!")
 def save_results(rs_test_acc,rs_test_loss, dataset, client_idx):
         dataset = str(dataset)

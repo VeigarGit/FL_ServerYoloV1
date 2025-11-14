@@ -14,12 +14,12 @@ import os
 import h5py
 from ultralytics import YOLO
 from pathlib import Path
-
+import tempfile
 class FederatedLearningServer:
     def __init__(self, args):
         self.args = args
         if args.dataset == 'COCO128':
-            self.global_model = YOLO("yolo11n.pt")
+            self.global_model = YOLO("yolo11n_atcll.pt")
         self.rs_test_acc = []
         self.rs_test_loss = []
         self.global_state = self.global_model.state_dict()
@@ -76,7 +76,7 @@ class FederatedLearningServer:
                 filtered_global_state = {k: v for k, v in current_global_state.items() 
                                     if not (k.startswith('model.model.23.'))} #or k.startswith('model.model.10.'))}
                 quantized_state_dict = {}
-                for k, v in filtered_global_state.items():
+                for k, v in current_global_state.items():
                     if v.dtype == torch.float32:
                         # Quantização para int8 (preservando escala e zero_point)
                         v_f32 = v.clone().float()
@@ -138,7 +138,7 @@ class FederatedLearningServer:
             traceback.print_exc()
 
     def load_test_data_yolo_ultralytics(self, client_id):
-        dataset_path = Path("../dataset/COCO128/")
+        dataset_path = Path("../dataset/tcl/")
         client_yaml_path = dataset_path / f'{client_id}.yaml'
         
         if not client_yaml_path.exists():
@@ -147,8 +147,14 @@ class FederatedLearningServer:
         return str(client_yaml_path)
 
     def evaluate_model_yolo_ultralytics(self, yaml_path):
-        model = copy.deepcopy(self.global_model)
-        results = model.val(data=yaml_path, imgsz=640, batch=16)
+        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_file:
+            temp_path = tmp_file.name
+        # Salvar o modelo local no arquivo temporário
+        self.global_model.save(temp_path)
+        # Carregar o modelo a partir do arquivo temporário
+        model = YOLO(temp_path)
+        selected_class_ids = [0, 1, 2, 3, 5, 7]
+        results = model.val(data=yaml_path, imgsz=640, batch=2, device=self.device, classes=selected_class_ids, plots=True, save_json=True, verbose=False)
         map50 = results.box.map50
         map = results.box.map
         return map50, map
@@ -199,7 +205,10 @@ class FederatedLearningServer:
                 self.client_addresses.append(addr)
             
             print(f"All {self.args.clients_per_round} clients connected. Starting training...")
-            
+            selected_class_ids = [0, 1, 2, 3, 5, 7]  # Exemplo de IDs de classes selecionadas
+            yaml_path = dataset_path = Path("../dataset/tcl/")
+            yaml_path = dataset_path / f'1.yaml'
+            #self.global_model.train(data=yaml_path, epochs=1, batch=2, imgsz=640, device=self.device, patience=100, save_period=5,classes=selected_class_ids,val=True,plots=True, verbose=False,save_json=True)
             for round_num in range(self.args.rounds):
                 print(f"\n--- Round {round_num + 1}/{self.args.rounds} ---")
                 client_updates = []
@@ -222,7 +231,7 @@ class FederatedLearningServer:
                     
                     with self.lock:
                         self.global_state = aggregated_state
-                        self.global_model.load_state_dict(self.global_state)
+                        self.global_model.load_state_dict(self.global_state, strict=False)
                     
                     if self.args.dataset == 'COCO128':
                         acc = []
@@ -246,7 +255,7 @@ class FederatedLearningServer:
                             losses = sum(loss) / len(loss)
                             self.rs_test_loss.append(losses)
                             print(f"Round {round_num + 1}: Test mAP@0.5: {losses:.4f}")
-
+                    self.save_results()
                     if self.args.dataset == 'tcl':
                         acc = []
                         loss = []
@@ -298,7 +307,7 @@ def parse_args():
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--port', type=int, default=9090)
     parser.add_argument('--clients-per-round', type=int, default=2)
-    parser.add_argument('--rounds', type=int, default=3)
+    parser.add_argument('--rounds', type=int, default=100)
     parser.add_argument('--dataset', type=str, default='COCO128', choices=['COCO128'])
     parser.add_argument('--test-client-idx', type=int, default=0)
     parser.add_argument('--max-clients', type=int, default=10)
