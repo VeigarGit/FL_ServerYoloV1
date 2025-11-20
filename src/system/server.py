@@ -19,7 +19,7 @@ class FederatedLearningServer:
     def __init__(self, args):
         self.args = args
         if args.dataset == 'COCO128':
-            self.global_model = YOLO("yolo11n_atcll.pt")
+            self.global_model = YOLO("yolo11n.pt")
         self.rs_test_acc = []
         self.rs_test_loss = []
         self.global_state = self.global_model.state_dict()
@@ -70,11 +70,12 @@ class FederatedLearningServer:
                 current_global_state = self.global_state.copy()
                 size_before = sys.getsizeof(pickle.dumps(current_global_state)) / (1024 * 1024)  # MB
                 keys = list(current_global_state.keys())
+                
                 #print("Keys before pruning:", keys)
                 
                 # Filtrar chaves que NÃO correspondem ao padrão model.model.23.*
                 filtered_global_state = {k: v for k, v in current_global_state.items() 
-                                    if not (k.startswith('model.model.23.'))} #or k.startswith('model.model.10.'))}
+                                    if not (k.startswith('model.model.23'))} #or k.startswith('model.model.10.'))}
                 quantized_state_dict = {}
                 for k, v in current_global_state.items():
                     if v.dtype == torch.float32:
@@ -93,7 +94,7 @@ class FederatedLearningServer:
                         # Mantém tensores não-float32 originais
                         quantized_state_dict[k] = v
                 # Opcional: verificar quais chaves foram removidas
-                removed_keys = [k for k in keys if k.startswith('model.model.23.') ]#or k.startswith('model.model.10.')]
+                removed_keys = [k for k in keys if k.startswith('model.model.23') ]#or k.startswith('model.model.10.')]
                 if removed_keys:
                     #print(f"Removendo camadas: {removed_keys}")
                     print(f"Total de camadas removidas: {len(removed_keys)}")
@@ -208,7 +209,7 @@ class FederatedLearningServer:
             selected_class_ids = [0, 1, 2, 3, 5, 7]  # Exemplo de IDs de classes selecionadas
             yaml_path = dataset_path = Path("../dataset/tcl/")
             yaml_path = dataset_path / f'1.yaml'
-            #self.global_model.train(data=yaml_path, epochs=1, batch=2, imgsz=640, device=self.device, patience=100, save_period=5,classes=selected_class_ids,val=True,plots=True, verbose=False,save_json=True)
+            self.global_model.train(data=yaml_path, epochs=1, batch=2, imgsz=640, device=self.device, patience=100, save_period=5,classes=selected_class_ids,val=True,plots=True, verbose=False,save_json=True)
             for round_num in range(self.args.rounds):
                 print(f"\n--- Round {round_num + 1}/{self.args.rounds} ---")
                 client_updates = []
@@ -230,7 +231,15 @@ class FederatedLearningServer:
                     aggregated_state = self.aggregate_models(client_updates)
                     
                     with self.lock:
-                        self.global_state = aggregated_state
+                        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_file:
+                            temp_path = tmp_file.name
+                            # Salvar o modelo local no arquivo temporário
+                        self.global_model.save(temp_path)
+                        # Carregar o modelo a partir do arquivo temporário
+                        self.global_model = YOLO(temp_path)
+                        for key in self.global_state:
+                            self.global_state[key] = aggregated_state[key]
+
                         self.global_model.load_state_dict(self.global_state, strict=False)
                     
                     if self.args.dataset == 'COCO128':

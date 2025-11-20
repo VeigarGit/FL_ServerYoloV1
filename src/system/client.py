@@ -257,7 +257,7 @@ def main():
     rs_test_acc=[0]
     rs_test_loss=[0]
     
-    model = YOLO("yolo11n_atcll.pt")
+    model = YOLO("yolo11n.pt")
     
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
@@ -344,7 +344,7 @@ def main():
             keys = list(updated_state.keys())
             size_before = sys.getsizeof(pickle.dumps(updated_state)) / (1024 * 1024)  # MB
             filtered_updated_state = {k: v for k, v in updated_state.items() 
-                                    if not (k.startswith('model.model.23.'))}# or k.startswith('model.model.10.'))}
+                                    if not (k.startswith('model.model.23'))}# or k.startswith('model.model.10.'))}
             quantized_state_dict = {}
             for k, v in updated_state.items():
                 if v.dtype == torch.float32:
@@ -363,7 +363,7 @@ def main():
                     # Mantém tensores não-float32 originais
                     quantized_state_dict[k] = v
             # Opcional: verificar quais chaves foram removidas
-            removed_keys = [k for k in keys if k.startswith('model.model.23.') ]#or k.startswith('model.model.10.')]
+            removed_keys = [k for k in keys if k.startswith('model.model.23') ]#or k.startswith('model.model.10.')]
             if removed_keys:
                 #print(f"Removendo camadas: {removed_keys}")
                 print(f"Total de camadas removidas: {len(removed_keys)}")

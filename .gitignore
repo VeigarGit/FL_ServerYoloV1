@@ -13,3 +13,4 @@ src/system/__pycache__
 yolo*
 modelo_prunned.pt
 *pth
+resultssemdfl/
