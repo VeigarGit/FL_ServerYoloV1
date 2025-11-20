@@ -3,6 +3,7 @@ src/dataset/MNIST
 src/dataset/Cifar100
 src/dataset/COCO128
 src/dataset/coco128
+src/dataset/P33-1
 src/system/runs/
 src/dataset/__pycache__
 src/results
@@ -14,3 +15,4 @@ yolo*
 modelo_prunned.pt
 *pth
 resultssemdfl/
+P33-1/
