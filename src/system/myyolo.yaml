@@ -1,0 +1,41 @@
+# Ultralytics YOLO11 Nano - Valores pela metade
+nc: 8
+
+scales:
+  # [depth, width, max_channels]
+  nano_half: [0.50, 0.375, 512]
+
+# YOLO11 Backbone - TODOS os valores divididos pela metade
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [24, 3, 2]]    # 0-P1/2 (era 48)
+  - [-1, 1, Conv, [48, 3, 2]]    # 1-P2/4 (era 96) - CORRIGIDO: 9648 → 48
+  - [-1, 1, C3k2, [96, False, 0.25]]   # 2 (era 192)
+  - [-1, 1, Conv, [96, 3, 2]]    # 3-P3/8 (era 192)
+  - [-1, 1, C3k2, [192, False, 0.25]]  # 4 (era 384)
+  - [-1, 1, Conv, [192, 3, 2]]   # 5-P4/16 (era 384)
+  - [-1, 1, C3k2, [192, True]]    # 6 (era 384)
+  - [-1, 1, Conv, [384, 3, 2]]   # 7-P5/32 (era 768)
+  - [-1, 1, C3k2, [384, True]]    # 8 (era 768)
+  - [-1, 1, SPPF, [384, 5]]      # 9 (era 768)
+  - [-1, 1, C2PSA, [384]]        # 10 (era 768)
+
+# YOLO11 Head - Também dividido pela metade
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 6], 1, Concat, [1]]    # cat backbone P4
+  - [-1, 1, C3k2, [192, False]]  # 13 (era 384)
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 4], 1, Concat, [1]]    # cat backbone P3
+  - [-1, 1, C3k2, [96, False]]   # 16 (era 192) (P3/8-small)
+
+  - [-1, 1, Conv, [96, 3, 2]]    # (era 192)
+  - [[-1, 13], 1, Concat, [1]] 
+  - [-1, 1, C3k2, [192, False]]  # 19 (era 384) (P4/16-medium)
+
+  - [-1, 1, Conv, [192, 3, 2]]   # (era 384)
+  - [[-1, 10], 1, Concat, [1]]
+  - [-1, 1, C3k2, [384, True]]   # 22 (era 768) (P5/32-large)
+
+  - [[16, 19, 22], 1, Detect, [nc]]
